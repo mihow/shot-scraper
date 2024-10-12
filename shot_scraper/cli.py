@@ -483,6 +483,63 @@ def _browser_context(
     is_flag=True,
     help="Leave servers running when script finishes",
 )
+To update the `multi()` function to take multiple screenshots in parallel, you can use Python's `concurrent.futures` module. Here is an updated version of the `multi()` function:
+
+```python
+import concurrent.futures
+
+# Existing imports...
+import click
+from click_default_group import DefaultGroup
+# ... other imports ...
+
+@cli.command()
+@click.argument("config", type=click.File(mode="r"))
+@click.option(
+    "-a",
+    "--auth",
+    type=click.File("r"),
+    help="Path to JSON authentication context file",
+)
+@scale_factor_options
+@click.option(
+    "--timeout",
+    type=int,
+    help="Wait this many milliseconds before failing",
+)
+# Hidden because will be removed if I release shot-scraper 2.0
+# See https://github.com/simonw/shot-scraper/issues/103
+@click.option(
+    "--fail-on-error", is_flag=True, help="Fail noisily on error", hidden=True
+)
+@click.option(
+    "noclobber",
+    "-n",
+    "--no-clobber",
+    is_flag=True,
+    help="Skip images that already exist",
+)
+@click.option(
+    "outputs",
+    "-o",
+    "--output",
+    help="Just take shots matching these output files",
+    multiple=True,
+)
+@browser_option
+@browser_args_option
+@user_agent_option
+@reduced_motion_option
+@log_console_option
+@skip_fail_options
+@silent_option
+@http_auth_options
+@click.option(
+    "leave_server",
+    "--leave-server",
+    is_flag=True,
+    help="Leave servers running when script finishes",
+)
 def multi(
     config,
     auth,
@@ -541,67 +598,69 @@ def multi(
             auth_username=auth_username,
             auth_password=auth_password,
         )
-        try:
-            for shot in shots:
-                if (
-                    noclobber
-                    and shot.get("output")
-                    and pathlib.Path(shot["output"]).exists()
-                ):
-                    continue
-                if outputs and shot.get("output") and shot.get("output") not in outputs:
-                    continue
-                # Run "sh" key
-                if shot.get("sh"):
-                    sh = shot["sh"]
-                    if isinstance(sh, str):
-                        subprocess.run(shot["sh"], shell=True)
-                    elif isinstance(sh, list):
-                        subprocess.run(sh)
-                    else:
-                        raise click.ClickException("- sh: must be a string or list")
-                # And "python" key
-                if shot.get("python"):
-                    subprocess.run([sys.executable, "-c", shot["python"]])
-                if "server" in shot:
-                    # Start that subprocess and remember the pid
-                    server = shot["server"]
-                    proc = None
-                    if isinstance(server, str):
-                        proc = subprocess.Popen(server, shell=True)
-                    elif isinstance(server, list):
-                        proc = subprocess.Popen(map(str, server))
-                    else:
-                        raise click.ClickException("server: must be a string or list")
-                    server_processes.append((proc, server))
-                    time.sleep(1)
-                if "url" in shot:
-                    try:
-                        take_shot(
-                            context,
-                            shot,
-                            log_console=log_console,
-                            skip=skip,
-                            fail=fail,
-                            silent=silent,
-                        )
-                    except TimeoutError as e:
-                        if fail or fail_on_error:
-                            raise click.ClickException(str(e))
-                        else:
-                            click.echo(str(e), err=True)
-                            continue
-        finally:
-            context.close()
-            browser_obj.close()
-            if leave_server:
-                for process, details in server_processes:
-                    print("Leaving server PID:", process.pid, " details:", details)
-            else:
-                if server_processes:
-                    for process, _ in server_processes:
-                        process.kill()
 
+        def process_shot(shot):
+            if (
+                noclobber
+                and shot.get("output")
+                and pathlib.Path(shot["output"]).exists()
+            ):
+                return
+            if outputs and shot.get("output") and shot.get("output") not in outputs:
+                return
+            # Run "sh" key
+            if shot.get("sh"):
+                sh = shot["sh"]
+                if isinstance(sh, str):
+                    subprocess.run(shot["sh"], shell=True)
+                elif isinstance(sh, list):
+                    subprocess.run(sh)
+                else:
+                    raise click.ClickException("- sh: must be a string or list")
+            # And "python" key
+            if shot.get("python"):
+                subprocess.run([sys.executable, "-c", shot["python"]])
+            if "server" in shot:
+                # Start that subprocess and remember the pid
+                server = shot["server"]
+                proc = None
+                if isinstance(server, str):
+                    proc = subprocess.Popen(server, shell=True)
+                elif isinstance(server, list):
+                    proc = subprocess.Popen(map(str, server))
+                else:
+                    raise click.ClickException("server: must be a string or list")
+                server_processes.append((proc, server))
+                time.sleep(1)
+            if "url" in shot:
+                try:
+                    take_shot(
+                        context,
+                        shot,
+                        log_console=log_console,
+                        skip=skip,
+                        fail=fail,
+                        silent=silent,
+                    )
+                except TimeoutError as e:
+                    if fail or fail_on_error:
+                        raise click.ClickException(str(e))
+                    else:
+                        click.echo(str(e), err=True)
+                        return
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            executor.map(process_shot, shots)
+
+        context.close()
+        browser_obj.close()
+        if leave_server:
+            for process, details in server_processes:
+                print("Leaving server PID:", process.pid, " details:", details)
+        else:
+            if server_processes:
+                for process, _ in server_processes:
+                    process.kill()
 
 @cli.command()
 @click.argument("url")
